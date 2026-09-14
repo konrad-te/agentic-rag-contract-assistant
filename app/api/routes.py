@@ -1,4 +1,5 @@
 from fastapi import APIRouter, File, HTTPException, UploadFile, status
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 from app.actions.workflow import build_follow_up_actions
@@ -38,8 +39,11 @@ class UploadContractResponse(BaseModel):
 @router.post("/contracts/upload", response_model=UploadContractResponse)
 async def upload_contract(file: UploadFile = File(...)) -> UploadContractResponse:
     upload = await validate_contract_upload(file)
-    text = _extract_or_reject(upload)
-    chunks = chunk_contract_text(text)
+
+    # Parsing and chunking are synchronous CPU work. Running them inline would
+    # block the event loop for the whole upload — a large PDF stalls every other
+    # request on this worker — so they go to the thread pool together.
+    text, chunks = await run_in_threadpool(_parse_and_chunk, upload)
 
     return UploadContractResponse(
         filename=upload.filename,
@@ -51,6 +55,12 @@ async def upload_contract(file: UploadFile = File(...)) -> UploadContractRespons
         character_count=len(text),
         chunk_count=len(chunks),
     )
+
+
+def _parse_and_chunk(upload: ValidatedUpload) -> tuple[str, list[str]]:
+    """Extract text and split it into chunks. Runs off the event loop."""
+    text = _extract_or_reject(upload)
+    return text, chunk_contract_text(text)
 
 
 def _extract_or_reject(upload: ValidatedUpload) -> str:
