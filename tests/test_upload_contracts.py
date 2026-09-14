@@ -1,6 +1,3 @@
-from io import BytesIO
-from zipfile import ZIP_DEFLATED, ZipFile
-
 from fastapi.testclient import TestClient
 
 from app.ingestion.uploads import MAX_UPLOAD_BYTES
@@ -29,17 +26,21 @@ def test_upload_accepts_text_contract() -> None:
         "content_type": "text/plain",
         "size_bytes": 55,
         "max_size_bytes": MAX_UPLOAD_BYTES,
-        "status": "accepted",
+        "status": "processed",
+        "character_count": 55,
+        "chunk_count": 1,
     }
 
 
-def test_upload_accepts_pdf_contract_by_content_signature() -> None:
+def test_upload_accepts_pdf_contract_by_content_signature(make_pdf) -> None:
+    # A real PDF, not just the %PDF- signature: the endpoint parses the file
+    # now, so a stub that only looks like a PDF no longer gets through.
     response = client.post(
         "/api/contracts/upload",
         files={
             "file": (
                 "contract.pdf",
-                b"%PDF-1.7\ncontract bytes",
+                make_pdf(["3. Limitation of Liability", "Vendor liability is capped."]),
                 "application/pdf",
             ),
         },
@@ -49,13 +50,14 @@ def test_upload_accepts_pdf_contract_by_content_signature() -> None:
     assert response.json()["file_type"] == "pdf"
 
 
-def test_upload_accepts_docx_contract_by_package_contents() -> None:
+def test_upload_accepts_docx_contract_by_package_contents(make_docx) -> None:
+    # A real DOCX package, for the same reason as the PDF test above.
     response = client.post(
         "/api/contracts/upload",
         files={
             "file": (
                 "contract.docx",
-                build_docx_bytes(),
+                make_docx(["4. Termination", "Either party may terminate for breach."]),
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             ),
         },
@@ -184,24 +186,3 @@ def test_upload_rejects_unsupported_mime_type_even_with_valid_content() -> None:
     assert response.json()["detail"] == (
         "Unsupported client MIME type. Upload a TXT, PDF, or DOCX contract."
     )
-
-
-def build_docx_bytes() -> bytes:
-    buffer = BytesIO()
-    with ZipFile(buffer, mode="w", compression=ZIP_DEFLATED) as archive:
-        archive.writestr(
-            "[Content_Types].xml",
-            (
-                '<?xml version="1.0" encoding="UTF-8"?>'
-                "<Types></Types>"
-            ),
-        )
-        archive.writestr(
-            "word/document.xml",
-            (
-                '<?xml version="1.0" encoding="UTF-8"?>'
-                "<w:document></w:document>"
-            ),
-        )
-
-    return buffer.getvalue()

@@ -1,10 +1,7 @@
-from io import BytesIO
 from itertools import pairwise
 from pathlib import Path
 
 import pytest
-from docx import Document
-from pypdf import PdfWriter
 
 from app.ingestion.parsing import (
     DocumentParseError,
@@ -23,68 +20,6 @@ SAMPLE_CONTRACT = (
 )
 
 
-def _make_pdf(lines: list[str]) -> bytes:
-    """Build a minimal one-page PDF containing the given lines of text."""
-    content = "BT /F1 12 Tf 14 TL 72 720 Td\n"
-    for line in lines:
-        escaped = line.replace("\\", r"\\").replace("(", r"\(").replace(")", r"\)")
-        content += f"({escaped}) Tj T*\n"
-    content += "ET"
-    stream = content.encode("latin-1")
-
-    objects = [
-        b"<</Type/Catalog/Pages 2 0 R>>",
-        b"<</Type/Pages/Kids[3 0 R]/Count 1>>",
-        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]"
-        b"/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>",
-        b"<</Length " + str(len(stream)).encode() + b">>stream\n" + stream + b"\nendstream",
-        b"<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>",
-    ]
-
-    out = bytearray(b"%PDF-1.4\n")
-    offsets = []
-    for number, body in enumerate(objects, start=1):
-        offsets.append(len(out))
-        out += f"{number} 0 obj\n".encode() + body + b"\nendobj\n"
-
-    xref_position = len(out)
-    out += f"xref\n0 {len(objects) + 1}\n".encode()
-    out += b"0000000000 65535 f \n"
-    for offset in offsets:
-        out += f"{offset:010d} 00000 n \n".encode()
-    out += (
-        f"trailer\n<</Size {len(objects) + 1}/Root 1 0 R>>\n"
-        f"startxref\n{xref_position}\n%%EOF\n"
-    ).encode()
-
-    return bytes(out)
-
-
-def _make_docx(paragraphs: list[str], table_rows: list[list[str]] | None = None) -> bytes:
-    document = Document()
-    for paragraph in paragraphs:
-        document.add_paragraph(paragraph)
-
-    if table_rows:
-        table = document.add_table(rows=len(table_rows), cols=len(table_rows[0]))
-        for row_index, row in enumerate(table_rows):
-            for cell_index, value in enumerate(row):
-                table.rows[row_index].cells[cell_index].text = value
-
-    buffer = BytesIO()
-    document.save(buffer)
-    return buffer.getvalue()
-
-
-def _make_scanned_pdf() -> bytes:
-    """A structurally valid PDF with no text layer, like a scan."""
-    writer = PdfWriter()
-    writer.add_blank_page(width=612, height=792)
-    buffer = BytesIO()
-    writer.write(buffer)
-    return buffer.getvalue()
-
-
 # --- AA-22: extract raw text ------------------------------------------------
 
 
@@ -100,8 +35,8 @@ def test_extract_text_strips_utf8_bom_and_crlf() -> None:
     assert extract_text(content, "txt") == "ACME Vendor Agreement\n\n1. Services"
 
 
-def test_extract_text_from_pdf() -> None:
-    pdf = _make_pdf(["3. Limitation of Liability", "Vendor liability is capped."])
+def test_extract_text_from_pdf(make_pdf) -> None:
+    pdf = make_pdf(["3. Limitation of Liability", "Vendor liability is capped."])
 
     text = extract_text(pdf, "pdf")
 
@@ -109,8 +44,8 @@ def test_extract_text_from_pdf() -> None:
     assert "capped" in text
 
 
-def test_extract_text_from_docx() -> None:
-    docx = _make_docx(["4. Termination", "Either party may terminate for breach."])
+def test_extract_text_from_docx(make_docx) -> None:
+    docx = make_docx(["4. Termination", "Either party may terminate for breach."])
 
     text = extract_text(docx, "docx")
 
@@ -118,17 +53,17 @@ def test_extract_text_from_docx() -> None:
     assert "Either party may terminate for breach." in text
 
 
-def test_extract_text_reads_docx_tables() -> None:
-    docx = _make_docx(["2. Fees"], table_rows=[["Term", "36 months"]])
+def test_extract_text_reads_docx_tables(make_docx) -> None:
+    docx = make_docx(["2. Fees"], table_rows=[["Term", "36 months"]])
 
     text = extract_text(docx, "docx")
 
     assert "Term | 36 months" in text
 
 
-def test_scanned_pdf_reports_no_extractable_text() -> None:
+def test_scanned_pdf_reports_no_extractable_text(make_scanned_pdf) -> None:
     with pytest.raises(NoExtractableTextError):
-        extract_text(_make_scanned_pdf(), "pdf")
+        extract_text(make_scanned_pdf(), "pdf")
 
 
 def test_corrupted_pdf_reports_parse_error() -> None:
